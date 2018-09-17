@@ -29,20 +29,34 @@ namespace NinjaTrader.NinjaScript.Strategies
 	{
 		//Use odd number
 		private const int searchArea = 5;
-		private const int searchAreaLeft = 3;
-		private const int searchAreaRight = 3;
 		private const string MIN = "minimum";
 		private const string MAX = "maximum";
+		private const string MIN_MAX = "minimum_maximum";
 		private int lastHistoricalBar;
-
+		private int lastBullTrigger =0;
+		private int lastBearTrigger =0;
+		
+		
+		private string OBSERVE_BULL = "bull";
+		private string OBSERVE_BEAR = "bear";
+		private double observeTrigger;
+		private double triggerRisk = 0;
+		private string observePattern;
+		private int lastPatternIndex=0;
+		private string WAITING_FOR_TRIGGER = "waitingForTrigger";
+		private string TRIGGER_EXECUTED = "triggerExecuted";
+		private string triggerStatus = "UNKNOWN";
+		private int lastProcessedBar =0;
+		
+		private bool notConfigured = true;
 		
 		protected override void OnStateChange()
 		{
 			if (State == State.SetDefaults)
 			{
 				Description									= @"";
-				Name										= "Swing Change Pattern v1.0.2";
-				Calculate									= Calculate.OnBarClose;
+				Name										= "Swing Change Pattern v1.0.5";
+				Calculate									= Calculate.OnPriceChange;
 				EntriesPerDirection							= 1;
 				EntryHandling								= EntryHandling.AllEntries;
 				IsExitOnSessionCloseStrategy				= true;
@@ -61,6 +75,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				// See the Help Guide for additional information
 				IsInstantiatedOnEachOptimizationIteration	= true;
 				SwingPeriod					= 3;
+				AutoTrade 					= false;
 				AddLine(Brushes.White, 1, "SwingPeriodLine");
 				AddLine(Brushes.Blue, 2, "BearSwingChange");
 				AddLine(Brushes.Indigo, 2, "BullSwingChange");
@@ -76,21 +91,24 @@ namespace NinjaTrader.NinjaScript.Strategies
 				RemoveDrawObjects();
 				if (!allowedTicks.Contains(Bars.BarsPeriod.Value)) {
 					MessageBox.Show("Allowed tick count is 100, 200, 300, 400, 500 not " + Bars.BarsPeriod.Value.ToString());
+					notConfigured=true;
 					return;
 				} 
 				if (!allowedInstruments.Contains(Instrument.FullName)) {
 					MessageBox.Show("Only YM or YM 09-18 or YM- 12-18 allowed, not " + Instrument.FullName);
+					notConfigured=true;
 					return;
 				}
 
 			    if (!Bars.BarsPeriod.MarketDataType.Equals(MarketDataType.Last))
 			    {
 			        MessageBox.Show("Last data only not " + Bars.BarsPeriod.MarketDataType.ToString());
-			        return;
+			        notConfigured=true;
+					return;
                 }
 				lastHistoricalBar = Count - 50;
 				markUp("Inital_", searchArea, lastHistoricalBar);
-				
+				notConfigured=false;
 			}
 		}
 
@@ -107,153 +125,99 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 		}
 
-		private bool isLocalMinimumTest(int bar) {
-			const int side = (searchArea - 1) / 2;
-			double lowToTest = Bars.GetLow(bar);
-			//Test left
-			for (int i = (bar - side); i < bar; i++) {
-				double low = Bars.GetLow(i);
-				if (low < lowToTest) {
-					return false;
-				}
-			}
-			//Test Right
-			for (int i = (bar + 1); i < (bar + side + 1); i++) {
-				double low = Bars.GetLow(i);
-				if (low < lowToTest) {
-					return false;
-				}
-				if (low == lowToTest) {
-					return false;
-				}
-			}
-			return true;
-		}
-		
-		private bool isLocalMaximumTest(int bar) {
-			const int side = (searchArea - 1) / 2;
-			double highToTest =  Bars.GetHigh(bar);
-			for (int i = (bar - side); i < bar; i++) {
-				double high = Bars.GetHigh(i);
-				if (high > highToTest) {
-					return false;
-				}
-			}
-			//Test Right
-			for (int i = (bar + 1); i < (bar + side + 1); i++) {
-				double high = Bars.GetHigh(i);
-				if (high > highToTest) {
-					return false;
-				}
-				if (high == highToTest) {
-					return false;
-				}
-			}
-			return true;
-		}
-		
-		
-		
-		
-		private Dictionary<int, string> findPivots(int start, int end) {
-			Dictionary<int, string> pivots = 
-            new Dictionary<int, string>();
-			if (Count < searchArea) {
-				return pivots;
+		private bool isSwingLowTest(int bar) {
+			double thisBarLow = Bars.GetLow(bar);
+			bool nextLowBarHigher = Bars.GetLow(bar + 1) >= thisBarLow;
+			//Check enough previous bars
+			if (!nextLowBarHigher) {
+			//	return false;
 			}
 			
-			Log("Start finding Pivots", NinjaTrader.Cbi.LogLevel.Information);
-			//i represents middle
-			//for (int i = searchArea; i < (Count - (searchArea / 2)); i++) {
-			for (int i = start; i < end; i++) {
-				bool isLocalMinimum = isLocalMinimumTest(i);
-				bool isLocalMaximum = isLocalMaximumTest(i);
-				
-				if (isLocalMinimum) {
-					pivots.Add(i, MIN);
-					DateTime timeValue = Bars.GetSessionEndTime(i);
-					//Draw.Dot(this, i.ToString() + "Minimim1"  + i.ToString(), true, timeValue, Bars.GetLow(i), Brushes.Blue);
-					//Draw.Diamond(this, i.ToString() + "Minimim"  + i.ToString(), true, timeValue, Bars.GetLow(i), Brushes.Blue); 
-					
+			// check previous X bars higher than this bar's low
+			double lowestPreviousPeriod = Bars.GetHigh(bar);
+			int previousBarIndex = bar - 1;
+			int lastBarToCheckIndex = bar - SwingPeriod;
+			for (int i = previousBarIndex; i >= lastBarToCheckIndex; i--) {
+				//bool doubleBottom = (i == previousBarIndex) && Bars.GetLow(i).Equals(thisBarLow);
+				//if (!doubleBottom) {
+				if (isInsideBar(i)) {
+					lastBarToCheckIndex--;
+				} else {
+					lowestPreviousPeriod = Math.Min(lowestPreviousPeriod, Bars.GetLow(i));
 				}
-				
-				if (isLocalMaximum && !isLocalMinimum) {
-					pivots.Add(i, MAX);
-					DateTime timeValue = Bars.GetSessionEndTime(i);
-					//Draw.Dot(this, i.ToString() + "Maximum1"  + i.ToString(), true, timeValue, Bars.GetHigh(i), Brushes.Blue);
-					//DateTime timeValue = Bars.GetSessionEndTime(i);
-					//Draw.Diamond(this, i.ToString()  + "Maximum"  + i.ToString(), true, timeValue, Bars.GetHigh(i), Brushes.Orange); 
-				}
-
-				//if x period swing
+			//	}
 			}
-			Log("Pivots Found", NinjaTrader.Cbi.LogLevel.Information);
-			return pivots;
+			
+			return thisBarLow < lowestPreviousPeriod;
+		}
+		
+		private bool isSwingHighTest(int bar) {
+			double thisBarHigh = Bars.GetHigh(bar);
+			bool nextHighBarLower= Bars.GetHigh(bar + 1) <= thisBarHigh;
+			//Check enough previous bars
+			if (!nextHighBarLower) {
+			//	return false;
+			}
+			
+			// check previous X bars higher than this bar's low
+			double highestPreviousPeriod = Bars.GetLow(bar);
+			int previousBarIndex = bar - 1;
+			int lastBarToCheckIndex = bar - SwingPeriod;
+			for (int i = previousBarIndex; i >= lastBarToCheckIndex; i--) {
+			//	bool doubleTop = (i == previousBarIndex) && Bars.GetHigh(i).Equals(thisBarHigh);
+			//	if (!doubleTop) {
+				if (isInsideBar(i)) {
+					lastBarToCheckIndex--;
+				} else {
+					highestPreviousPeriod = Math.Max(highestPreviousPeriod, Bars.GetHigh(i));
+				}
+			//	}
+			}
+			
+			return thisBarHigh > highestPreviousPeriod;
 		}
 		
 		
-		private Dictionary<int, string> findPeriodSwings(Dictionary<int, string> pivots) {
+		private bool isInsideBar(int barIndex) {
+			int previousBarIndex = barIndex -1;			
+			bool withinHigh = Bars.GetHigh(barIndex) <= Bars.GetHigh(previousBarIndex);
+			bool withinLow = Bars.GetLow(barIndex) >= Bars.GetLow(previousBarIndex);
+			return withinHigh && withinLow;
+		}
+		
+		
+		private Dictionary<int, string> findPeriodSwings(int start, int end) {
 			Log("Find Period Swings", NinjaTrader.Cbi.LogLevel.Information);
 			//Remove non period swings
-			List<int> orderedMarkers = pivots.Keys.ToList();
-			orderedMarkers.Sort();
 			
-			Dictionary<int, string> periodSwingsPivots = 
+			Dictionary<int, string> periodSwings = 
             new Dictionary<int, string>();
-			int previousMarker = -1;
-			foreach (int marker in orderedMarkers) {
+
+			for (int i = start; i < end; i++) {
 				try {
-					if (previousMarker == -1) {
-						previousMarker = marker;
-						continue;
+					bool isSwingLow  = isSwingLowTest(i);
+					bool isSwingHigh = isSwingHighTest(i);
+					
+					if (isSwingLow && isSwingHigh) {
+						periodSwings.Add(i, MIN_MAX);
 					}
 					
-					bool hasSwingPeriod = false;
-					if (pivots[previousMarker].Equals(MAX)) {
-						//look for x periods where lows are less than close
-						for (int start = (previousMarker - SwingPeriod) ; start < (marker+1) ; start++) {
-							int end = start + SwingPeriod;
-							double minLow = int.MaxValue;
-							//Check each swing bar
-							for (int swingCount = start ;  swingCount < end ; swingCount++) {
-								minLow = Math.Min(minLow, Bars.GetLow(swingCount));
-							}
-							if (Bars.GetLow(end) < minLow) {
-								hasSwingPeriod = true;
-								break;
-							}
-						}
-						
+					if (isSwingLow) {
+						periodSwings.Add(i, MIN);
 					}
-				
-				
-				if (pivots[previousMarker].Equals(MIN)) {
-						//look for x periods where highs are more than close
-						for (int start = (previousMarker - SwingPeriod) ; start < (marker+1) ; start++) {
-							int end = start + SwingPeriod;
-							double maxHigh = int.MinValue;
-							//Check each swing bar
-							for (int swingCount = start ;  swingCount < end ; swingCount++) {
-								maxHigh = Math.Max(maxHigh, Bars.GetHigh(swingCount));
-							}
-							if (Bars.GetHigh(end) > maxHigh) {
-								hasSwingPeriod = true;
-								break;
-							}
-						}
-						
+					
+					if (isSwingHigh) {
+						periodSwings.Add(i, MAX);
 					}
-				
-				if (hasSwingPeriod) {
-					periodSwingsPivots.Add(previousMarker, pivots[previousMarker]);
-				}	
-				previousMarker = marker;
+					
+					
+
 				} catch (Exception e) {
 					Log(e.ToString(), NinjaTrader.Cbi.LogLevel.Error);
 				}
 			}
 			Log("Period Swings Found", NinjaTrader.Cbi.LogLevel.Information);	
-			return periodSwingsPivots;
+			return periodSwings;
 		}
 		
 		
@@ -263,7 +227,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 			orderedMarkers.Sort();
 			//orderedMarkers = markers.Sort();
 			foreach (int marker in orderedMarkers) {
-				if (pivots[marker].Equals(MAX)) {
+				if (pivots[marker].Equals(MIN_MAX)) {
+					DateTime timeValue = Bars.GetSessionEndTime(marker);
+					Draw.Dot(this, objnum.ToString() + prefix + "L", false, timeValue, Bars.GetHigh(marker), Brushes.Red);
+					objnum++;
+					Draw.Dot(this, objnum.ToString() + prefix + "L", false, timeValue, Bars.GetLow(marker), Brushes.Red);
+					objnum++;
+				} else if (pivots[marker].Equals(MAX)) {
 					DateTime timeValue = Bars.GetSessionEndTime(marker);
 					Draw.Dot(this, objnum.ToString() + prefix + "L", false, timeValue, Bars.GetHigh(marker), Brushes.Red); 
 					objnum++;
@@ -320,8 +290,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 			orderedMarkers.Sort();
 
 			int objnum = 0;
+			string previous = "";
 			foreach (int marker in orderedMarkers) {
-				if (reducedPivots[marker].Equals(MAX)) {
+				if (reducedPivots[marker].Equals(MIN_MAX) && previous.Equals(MAX)) {
+					DateTime timeValue = Bars.GetSessionEndTime(marker);
+					Draw.Diamond(this, objnum.ToString() + prefix + "M", false, timeValue, Bars.GetLow(marker), Brushes.Blue); 
+					objnum++;
+					timeValue = Bars.GetSessionEndTime(marker);
+					Draw.Diamond(this, objnum.ToString() + prefix + "M", false, timeValue, Bars.GetHigh(marker), Brushes.White); 
+					objnum++;
+				} else if (reducedPivots[marker].Equals(MIN_MAX) && previous.Equals(MIN)) {
+					DateTime timeValue = Bars.GetSessionEndTime(marker);
+					Draw.Diamond(this, objnum.ToString() + prefix + "M", false, timeValue, Bars.GetHigh(marker), Brushes.White); 
+					objnum++;
+					timeValue = Bars.GetSessionEndTime(marker);
+					Draw.Diamond(this, objnum.ToString() + prefix + "M", false, timeValue, Bars.GetLow(marker), Brushes.Blue); 
+					objnum++;
+				} else if (reducedPivots[marker].Equals(MAX)) {
 					DateTime timeValue = Bars.GetSessionEndTime(marker);
 					Draw.Diamond(this, objnum.ToString() + prefix + "M", false, timeValue, Bars.GetHigh(marker), Brushes.White); 
 					objnum++;
@@ -330,6 +315,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 					Draw.Diamond(this, objnum.ToString() + prefix + "M", false, timeValue, Bars.GetLow(marker), Brushes.Blue); 
 					objnum++;
 				}
+				previous = reducedPivots[marker];
 			}	
 		}
 		
@@ -341,9 +327,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 			int objnum = 0;
 			int previousMarker = 0;
 			double previousValue=0;
+			string previous = "";
 			foreach (int marker in orderedMarkers) {
 				double value = 0;
-				if (reducedPivots[marker].Equals(MAX)) {
+				if (reducedPivots[marker].Equals(MIN_MAX) && previous.Equals(MIN)) {
+					value = Bars.GetHigh(marker);
+				} else if (reducedPivots[marker].Equals(MIN_MAX) && previous.Equals(MAX)) {
+					value = Bars.GetLow(marker);
+				} else if (reducedPivots[marker].Equals(MAX)) {
 					value = Bars.GetHigh(marker);
 				} else {
 					value = Bars.GetLow(marker);
@@ -363,6 +354,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				objnum++;
 				previousValue = value;
 				previousMarker = marker;
+				previous = reducedPivots[marker];
 				
 			}	
 		}
@@ -500,22 +492,101 @@ namespace NinjaTrader.NinjaScript.Strategies
 		}
 		
 		
-		private void markUp(string prefix, int start, int end) {
+		void activateBearSwing(int firstIndex, int secondIndex, int thirdIndex) {
+			//Take last 3
+			
+			//Check if bear swing
+			double firstBarValue = Bars.GetHigh(firstIndex);
+			double secondBarValue  = Bars.GetLow(secondIndex);
+			double thirdBarValue  = Bars.GetHigh(thirdIndex);
+			
+			bool firstIsMoreThanThird = firstBarValue > thirdBarValue;
+				
+			if (!firstIsMoreThanThird) {
+				return;
+			}
+				
+			bool secondLower = secondBarValue < firstBarValue && secondBarValue < thirdBarValue;
+				
+			if (!secondLower) {
+				return;
+			}
+			
+			if (thirdIndex > lastPatternIndex) {
+				observePattern = OBSERVE_BEAR;
+				observeTrigger = secondBarValue;
+				lastPatternIndex = thirdIndex;
+			 	triggerStatus = WAITING_FOR_TRIGGER;
+				triggerRisk = (thirdBarValue - secondBarValue) * 1.2;
+				
+				
+				DateTime startTimeValue = Bars.GetTime(firstIndex);
+				DateTime endTimeValue = Bars.GetTime(secondIndex);
+				Draw.Line(this, "ActiveSwing1", false, startTimeValue, firstBarValue, endTimeValue, secondBarValue, Brushes.Yellow,
+			                        DashStyleHelper.Solid, 2, true);
+				startTimeValue = Bars.GetTime(secondIndex);
+				endTimeValue = Bars.GetTime(thirdIndex);
+				Draw.Line(this, "ActiveSwing2", false, startTimeValue, secondBarValue, endTimeValue, thirdBarValue, Brushes.Yellow,
+			                        DashStyleHelper.Solid, 2, true);
+			}
+			
+		}
+		
+		void activateBullSwing(int firstIndex, int secondIndex, int thirdIndex) {
+			//Take last 3
+			
+			//Check if bull swing
+			double firstBarValue = Bars.GetLow(firstIndex);
+			double secondBarValue  = Bars.GetHigh(secondIndex);
+			double thirdBarValue  = Bars.GetLow(thirdIndex);
+			
+			bool firstIsLessThanThird = firstBarValue < thirdBarValue;
+				
+			if (!firstIsLessThanThird) {
+				return;
+			}
+				
+			bool secondHigher = secondBarValue > firstBarValue && secondBarValue > thirdBarValue;
+				
+			if (!secondHigher) {
+				return;
+			}
+			
+			if (thirdIndex > lastPatternIndex) {
+				observePattern = OBSERVE_BULL;
+				observeTrigger = secondBarValue;
+				lastPatternIndex = thirdIndex;
+				triggerStatus = WAITING_FOR_TRIGGER;
+				triggerRisk = (secondBarValue - thirdBarValue) * 1.2;
+				
+				DateTime startTimeValue = Bars.GetTime(firstIndex);
+				DateTime endTimeValue = Bars.GetTime(secondIndex);
+				Draw.Line(this, "ActiveSwing1", false, startTimeValue, firstBarValue, endTimeValue, secondBarValue, Brushes.Yellow,
+			                        DashStyleHelper.Solid, 2, true);
+				startTimeValue = Bars.GetTime(secondIndex);
+				endTimeValue = Bars.GetTime(thirdIndex);
+				Draw.Line(this, "ActiveSwing2", false, startTimeValue, secondBarValue, endTimeValue, thirdBarValue, Brushes.Yellow,
+			                        DashStyleHelper.Solid, 2, true);
+			}
+			
+		}
+		
+		private Dictionary<int, string> markUp(string prefix, int start, int end) {
 			//Look at current area mark swing low or swing high
 			//look at current area, if pattern possible consider entry
 			
 			//
-			Dictionary<int, string> pivots = findPivots(start, end);
-			Dictionary<int, string> periodSwingsPivots = findPeriodSwings(pivots);
+			Dictionary<int, string> periodSwingsPivots = findPeriodSwings(start, end);
 			Dictionary<int, string> reducedPivots = removeDuplicatePivots(periodSwingsPivots);
-			plotPivots(pivots, prefix);
-			plotSwingPivots(reducedPivots, prefix);
+			//plotPivots(periodSwingsPivots, prefix);
+		    plotSwingPivots(reducedPivots, prefix);
 			plotSwings(reducedPivots, prefix);
 			bullishSwing(reducedPivots, prefix);
 			bearSwing(reducedPivots, prefix);
 			
+			return reducedPivots;
 			
-			
+			//take last 3
 			
 			/*
 			//Start at 3
@@ -541,14 +612,93 @@ namespace NinjaTrader.NinjaScript.Strategies
 		protected override void OnBarUpdate()
 		{
 			//markUp();
-			markUp("Real_", lastHistoricalBar -20, Count);
+			if (CurrentBar < (Count-2)) {
+				return;
+			}
+				
+			if (notConfigured) {
+				return;	
+			}
+			
+			bool isNewBar = CurrentBar > lastProcessedBar;
+			if (IsFirstTickOfBar) {
+				lastProcessedBar = CurrentBar;
+				Dictionary<int, string> reducedPivots = markUp("Real_", lastHistoricalBar, CurrentBar);
+				
+				int countPivots = reducedPivots.Count();
+				if (countPivots < 4) {
+					return;
+				}
+				int i =0;
+				
+
+			    List<int> orderedMarkers = reducedPivots.Keys.ToList();
+			    orderedMarkers.Sort();
+				for (i=0; i< Math.Min(5,countPivots - 3);i++) {
+				    int firstIndex = orderedMarkers[countPivots - 4 - i];
+				    int secondIndex = orderedMarkers[countPivots - 3 - i];
+		            int thirdIndex = orderedMarkers[countPivots - 2 - i];
+
+
+		            //Remove all not min max
+		            bool hasMinMax = reducedPivots[firstIndex].Equals(MIN_MAX) || reducedPivots[secondIndex].Equals(MIN_MAX) || reducedPivots[thirdIndex].Equals(MIN_MAX);
+					
+					
+					//bool possibleBear = reducedPivots[firstIndex].Equals(MAX) || reducedPivots[secondIndex].Equals(MIN) || reducedPivots[thirdIndex].Equals(MAX);
+					//bool possibleBull = reducedPivots[firstIndex].Equals(MIN) || reducedPivots[secondIndex].Equals(MAX) || reducedPivots[thirdIndex].Equals(MIN);
+					
+					bool possibleBear = (reducedPivots[secondIndex].Equals(MIN_MAX) && reducedPivots[thirdIndex].Equals(MIN)) ||
+						(reducedPivots[firstIndex].Equals(MAX) && reducedPivots[secondIndex].Equals(MIN) && reducedPivots[thirdIndex].Equals(MAX))||
+						(reducedPivots[secondIndex].Equals(MAX) && reducedPivots[thirdIndex].Equals(MIN_MAX));
+					bool possibleBull = (reducedPivots[secondIndex].Equals(MIN_MAX) && reducedPivots[thirdIndex].Equals(MAX)) ||
+						(reducedPivots[firstIndex].Equals(MIN) && reducedPivots[secondIndex].Equals(MAX) &&  reducedPivots[thirdIndex].Equals(MIN)) ||
+						(reducedPivots[secondIndex].Equals(MIN) && reducedPivots[thirdIndex].Equals(MIN_MAX));
+					
+					if (reducedPivots[thirdIndex].Equals(MIN_MAX)) {
+						firstIndex = secondIndex;
+						secondIndex = thirdIndex;
+					} else  if (reducedPivots[secondIndex].Equals(MIN_MAX)){
+						firstIndex = secondIndex;
+					}
+					
+					if (possibleBear) {
+						activateBearSwing(firstIndex, secondIndex, thirdIndex);
+					}
+					
+					if (possibleBull) {
+						activateBullSwing(firstIndex, secondIndex, thirdIndex);
+					}
+				}
+			}
+			
+			if (triggerStatus.Equals(WAITING_FOR_TRIGGER) && AutoTrade && observePattern.Equals(OBSERVE_BULL) && Close[0] > observeTrigger) {
+				Log("Triggered Bull Current Value: " + Close[0].ToString() + " Trigger Value: " + observeTrigger.ToString(), LogLevel.Information);
+				ExitShort();
+				EnterLong(1);
+				//SetProfitTarget(CalculationMode.Ticks, triggerRisk);
+				//SetStopLoss(CalculationMode.Ticks, triggerRisk);
+				SetTrailStop(CalculationMode.Ticks, triggerRisk);
+				triggerStatus = TRIGGER_EXECUTED;
+			}
+			if (triggerStatus.Equals(WAITING_FOR_TRIGGER) && AutoTrade && observePattern.Equals(OBSERVE_BEAR) && Close[0] < observeTrigger) {
+				Log("Triggered Bear Current Value: " + Close[0].ToString() + " Trigger Value: " + observeTrigger.ToString(), LogLevel.Information);
+				ExitLong();
+				EnterShort(1);
+				//SetProfitTarget(CalculationMode.Ticks, triggerRisk);
+				//SetStopLoss(CalculationMode.Ticks, triggerRisk);
+				SetTrailStop(CalculationMode.Ticks, triggerRisk);	
+				triggerStatus = TRIGGER_EXECUTED;
+			}
 			
 		}		[NinjaScriptProperty]
 		[Range(3, int.MaxValue)]
 		[Display(Name="SwingPeriod", Description="Swing Period 3, 5, 7", Order=1, GroupName="Parameters")]
 		public int SwingPeriod
 		{ get; set; }
-
+		[NinjaScriptProperty]
+		[Display(Name="Auto Trade", Description="Automatically Trade", Order=3, GroupName="Parameters")]
+		public bool AutoTrade
+		{ get; set; }
 
 
 
